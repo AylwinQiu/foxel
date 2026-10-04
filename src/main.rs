@@ -7,6 +7,7 @@ use rustpython_vm::Interpreter;
 /// ZZZZ
 fn main() {
     Interpreter::without_stdlib(Default::default()).enter(|vm| {
+        //这是一个例子，展示如何使用运行一段python字符串。
         // Your vm can run in here.
         vm.run_simple_string(
             r#"

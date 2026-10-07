@@ -169,4 +169,13 @@ impl canvas::Canvas for RaylibCanvas {
     fn should_close(&self) -> bool {
         self.raylib.window_should_close()
     }
+
+    fn get_size(&self) -> (usize, usize) {
+        // raylib reports the logical screen size (the drawing coordinate space),
+        // not the HiDPI framebuffer size. It is never negative in practice.
+        (
+            self.raylib.get_screen_width().max(0) as usize,
+            self.raylib.get_screen_height().max(0) as usize,
+        )
+    }
 }

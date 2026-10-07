@@ -2,12 +2,16 @@
 /// like raylib and html.
 ///
 
+#[derive(Clone, Copy)]
 pub struct Canvas1d(pub i32);
 
+#[derive(Clone, Copy)]
 pub struct Canvas2d(pub i32, pub i32);
 
+#[derive(Clone, Copy)]
 pub struct CanvasColor(pub u8, pub u8, pub u8, pub u8); // rgba
 
+#[derive(Clone)]
 pub enum DrawIns {
     Square {
         // add a square.
@@ -32,28 +36,11 @@ pub enum DrawIns {
     },
 }
 
-pub trait CanvasOld {
-    fn add_square(
-        self: Self,
-        side: Canvas1d,
-        center: Canvas2d,
-        color: CanvasColor,
-        rotation: i32,
-    ) -> Self;
-    fn add_line(self: Self, start: Canvas2d, end: Canvas2d, color: CanvasColor) -> Self;
-    fn add_text(
-        self: Self,
-        text: &str,
-        center: Canvas2d,
-        color: CanvasColor,
-        rotation: i32,
-        font: &str,
-    ) -> Self;
-    fn draw(self: Self) -> Self;
-    fn clean(self: Self) -> Self;
-}
+
 
 pub trait Canvas {
     fn draw(self: Self, ins: Vec<DrawIns>) -> Self;
     fn should_close(self: &Self) -> bool;
+    // 返回窗口大小。
+    fn get_size(self:&Self) -> (usize, usize);
 }

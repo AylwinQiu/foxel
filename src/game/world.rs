@@ -1,5 +1,5 @@
 use core::fmt;
-use std::collections::HashMap;
+use std::{cell::Cell, collections::HashMap, hash::Hash};
 
 
 //use rustpython_vm::stdlib::{_io::Fildes, errno::errors::TPM_E_BAD_PRESENCE};
@@ -10,26 +10,22 @@ const IDENTITY_SCALE: usize = 32;
 
 /// Physical type.
 pub type PhysicalTime = f64;
+#[derive(Debug, Clone, Copy)]
 pub struct Physical1d(pub f64);
+
+#[derive(Debug, Clone, Copy)]
 pub struct Physical2d(pub f64, pub f64);
+
+#[derive(Debug, Clone, Copy)]
 pub struct Angle(pub f32);
 
+#[derive(Debug, Clone, Copy)]
 pub struct PhysicalLinearVelocity(pub f64, pub f64);
+#[derive(Debug, Clone, Copy)]
 pub struct PhycicalAngualrVelocity(pub f64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CellId(pub u128);
-
-/// 世界的场。表示从id可以算出各种方块的特性。对于可逆场也能算出id。
-pub trait Field<T> {
-    fn get_field(self: &Self, cellid: CellId) -> Option<T>;
-    /// 对于没有返回场的永远返回None。
-    fn get_id(self: &Self, t: T) -> Option<CellId>;
-    /// 这个的k或者v设置成None可以起到删除的作用。
-    fn set(self: &mut Self, k: CellId, v: Option<T>);
-    /// 返回是否该场真的有返场。
-    fn have_rev(self: &Self) -> bool;
-}
 
 /// 四叉树坐标。  
 /// 四叉树坐标原点在左下角。
@@ -77,138 +73,135 @@ impl TreePosition {
 }
 
 /// 图层坐标, 游戏里面不同物体所在的图层。
+#[derive(Debug, Clone, Copy)]
 pub struct Layer(pub i64);
 
-/// 我们以后让游戏玩家可以自己添加field。
-pub trait FieldStatus{
-    // TODO
+pub type Offset = Physical2d;
+
+/// 一个场的数据：每个格子最多一个值。没有返场。
+pub struct FieldStore<T> {
+    map: HashMap<CellId, T>,
+}
+
+impl<T: Copy> FieldStore<T> {
+    pub fn new() -> Self {
+        return Self { map: HashMap::new() };
+    }
+    pub fn get(self: &Self, id: CellId) -> Option<T> {
+        return self.map.get(&id).copied();
+    }
+    /// v 为 None 时删除。
+    pub fn set(self: &mut Self, id: CellId, v: Option<T>) {
+        match v {
+            Some(v) => { self.map.insert(id, v); },
+            None => { self.map.remove(&id); },
+        };
+    }
+    pub fn iter(self: &Self) -> impl Iterator<Item = (CellId, T)> + '_ {
+        return self.map.iter().map(|(k, v)| (*k, *v));
+    }
+}
+
+/// 带返场的场：值和格子一一对应，可以从值反查格子。
+pub struct IndexedFieldStore<T> {
+    map: HashMap<CellId, T>,
+    rev: HashMap<T, CellId>,
+}
+
+impl<T: Copy + Eq + Hash> IndexedFieldStore<T> {
+    pub fn new() -> Self {
+        return Self { map: HashMap::new(), rev: HashMap::new() };
+    }
+    pub fn get(self: &Self, id: CellId) -> Option<T> {
+        return self.map.get(&id).copied();
+    }
+    pub fn get_id(self: &Self, t: T) -> Option<CellId> {
+        return self.rev.get(&t).copied();
+    }
+    /// v 为 None 时删除。
+    pub fn set(self: &mut Self, id: CellId, v: Option<T>) {
+        // 先删掉 id 原来的值，正反两张表一起删。
+        if let Some(old) = self.map.remove(&id) {
+            self.rev.remove(&old);
+        }
+        if let Some(v) = v {
+            // 新值如果被别的格子占着，把那个格子的记录也删掉，保证正反表一一对应。
+            if let Some(other) = self.rev.insert(v, id) {
+                self.map.remove(&other);
+            }
+            self.map.insert(id, v);
+        }
+    }
+    pub fn iter(self: &Self) -> impl Iterator<Item = (CellId, T)> + '_ {
+        return self.map.iter().map(|(k, v)| (*k, *v));
+    }
+}
+
+/// 世界的所有数据。场之间只能通过这里交流。
+pub struct Status {
+    pub tree_position: IndexedFieldStore<TreePosition>,
+    pub offset: FieldStore<Offset>,
+    pub angle: FieldStore<Angle>,
+    pub linear_velocity: FieldStore<PhysicalLinearVelocity>,
+    pub angular_velocity: FieldStore<PhycicalAngualrVelocity>,
+    pub layer: FieldStore<Layer>,
+    next_id: u128,
+}
+
+impl Status {
+    pub fn new() -> Self {
+        return Self {
+            tree_position: IndexedFieldStore::new(),
+            offset: FieldStore::new(),
+            angle: FieldStore::new(),
+            linear_velocity: FieldStore::new(),
+            angular_velocity: FieldStore::new(),
+            layer: FieldStore::new(),
+            next_id: 0,
+        };
+    }
+    /// 分配一个新的格子 id，不写入任何场。
+    pub fn new_cell(self: &mut Self) -> CellId {
+        let id = CellId(self.next_id);
+        self.next_id += 1;
+        return id;
+    }
+    /// 从所有场里删掉这个格子。新增场时这里也要加。
+    pub fn remove_cell(self: &mut Self, id: CellId) {
+        self.tree_position.set(id, None);
+        self.offset.set(id, None);
+        self.angle.set(id, None);
+        self.linear_velocity.set(id, None);
+        self.angular_velocity.set(id, None);
+        self.layer.set(id, None);
+    }
+}
+
+/// 场的逻辑。只能读写 Status，看不到其他场的逻辑。
+pub trait FieldLogic {
+    fn update(self: &mut Self, status: &mut Status, dt: PhysicalTime);
 }
 
 /// 游戏世界
 pub struct WorldStatus {
-    tree_position: HashMap<CellId, TreePosition>,
-    tree_position_rev: HashMap<TreePosition, CellId>,
-    // 这个不一定用得到。
-    dyn_fields_status:HashMap<String, Box<dyn FieldStatus>>, 
+    pub status: Status,
+    fields: Vec<Box<dyn FieldLogic>>,
 }
 
-/// 实现树位置场
-impl Field<TreePosition> for WorldStatus {
-    fn get_field(self: &Self, cellid: CellId) -> Option<TreePosition> {
-        return match self.tree_position.get(&cellid) {
-            Some(x) => Some((*x).clone()),
-            None => None,
-        };
+impl WorldStatus {
+    pub fn new() -> Self {
+        return Self { status: Status::new(), fields: Vec::new() };
     }
-    fn get_id(self: &Self, t: TreePosition) -> Option<CellId> {
-        return match self.tree_position_rev.get(&t) {
-            Some(x) => Some((*x).clone()),
-            None => None,
-        };
+    /// 按添加顺序执行。
+    pub fn add_field(self: &mut Self, field: Box<dyn FieldLogic>) {
+        self.fields.push(field);
     }
-    fn set(self: &mut Self, k: CellId, v: Option<TreePosition>) {
-        if v == None {
-            // delete the pair in the field and rev field if rev field exist.
-            // Get the value of k
-            match self.tree_position.get(&k){
-                Some(vv) => {
-                    // remove the rev field pair.
-                    self.tree_position_rev.remove(vv);
-                    // remove the field.
-                    self.tree_position.remove(&k);
-                },
-                None => ()
-            };
-            self.tree_position.remove(&k);
+    pub fn update(self: &mut Self, dt: PhysicalTime) {
+        for f in self.fields.iter_mut() {
+            f.update(&mut self.status, dt);
         }
-        return ();
-    }
-    fn have_rev(self: &Self) -> bool {
-        return true;
     }
 }
-
-pub type Offset = Physical2d;
-
-// 实现offset场（这个场输出的是每个square相关自己原来位置的偏移量）
-impl Field<Offset> for WorldStatus {
-    fn get_field(self: &Self, cellid: CellId) -> Option<Offset> {
-        todo!()
-    }
-    fn have_rev(self: &Self) -> bool {
-        return false;
-    }
-    fn get_id(self: &Self, t: Offset) -> Option<CellId> {
-        todo!()
-    }
-    fn set(self: &mut Self, k: CellId, v: Option<Offset>) {
-        todo!()
-    }
-}
-
-// 实现角度场（这个场输出的是每个square的倾斜角度）
-impl Field<Angle> for WorldStatus {
-    fn get_field(self: &Self, cellid: CellId) -> Option<Angle> {
-        todo!()
-    }
-    fn get_id(self: &Self, t: Angle) -> Option<CellId> {
-        todo!()
-    }
-    fn have_rev(self: &Self) -> bool {
-        return false;
-    }
-    fn set(self: &mut Self, k: CellId, v: Option<Angle>) {
-        todo!()
-    }
-}
-
-// 实现线速度场
-impl Field<PhysicalLinearVelocity> for WorldStatus {
-    fn get_field(self: &Self, cellid: CellId) -> Option<PhysicalLinearVelocity> {
-        todo!()
-    }
-    fn get_id(self: &Self, t: PhysicalLinearVelocity) -> Option<CellId> {
-        todo!()
-    }
-    fn have_rev(self: &Self) -> bool {
-        return false;
-    }
-    fn set(self: &mut Self, k: CellId, v: Option<PhysicalLinearVelocity>) {
-        todo!()
-    }
-}
-
-// 实现角速度场
-impl Field<PhycicalAngualrVelocity> for WorldStatus {
-    fn get_field(self: &Self, cellid: CellId) -> Option<PhycicalAngualrVelocity> {
-        todo!()
-    }
-    fn get_id(self: &Self, t: PhycicalAngualrVelocity) -> Option<CellId> {
-        todo!()
-    }
-    fn have_rev(self: &Self) -> bool {
-        return false;
-    }
-    fn set(self: &mut Self, k: CellId, v: Option<PhycicalAngualrVelocity>) {
-        todo!()
-    }
-}
-
-// 实现图层场
-impl Field<Layer> for WorldStatus {
-    fn get_field(self: &Self, cellid: CellId) -> Option<Layer> {
-        todo!()
-    }
-    fn get_id(self: &Self, t: Layer) -> Option<CellId> {
-        todo!()
-    }
-    fn have_rev(self: &Self) -> bool {
-        return false;
-    }
-    fn set(self: &mut Self, k: CellId, v: Option<Layer>) {
-        todo!()
-    }
-} 
 
 #[test]
 fn __test(){

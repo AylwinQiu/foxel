@@ -178,5 +178,3 @@ class World:
         side = math.ldexp(1.0, IDENTITY_DEPTH - depth)
         # 点总落在所选cell内，因此偏移在[-0.5, 0.5)之间
         return treepos, Offset((phypos.x - center.x) / side, (phypos.y - center.y) / side)
-    
-    

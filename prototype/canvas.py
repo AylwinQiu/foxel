@@ -1,5 +1,5 @@
 import raylib as rl
-
+from .world import PhysicalPosition2D
 class Canvas1D:
     def __init__(self, x:float):
         self.x = x
@@ -14,7 +14,14 @@ class Color:
     def __init__(self, r:int, g:int, b:int, a:int):
         self.r, self.g, self.b, self.a = r, g, b, a
 
+# 这是物理距离和屏幕距离的比值。这里是说10个像素对应physical的1.0
+FRAC_CANVAS_PHYSICAL = 10.0
 
+def physical_to_canvas(p:PhysicalPosition2D)->Canvas2D:
+    '''物理原点对应屏幕中心；物理y轴向上，屏幕y轴向下，所以y要取反。需要窗口已初始化'''
+    cx = rl.GetScreenWidth() / 2
+    cy = rl.GetScreenHeight() / 2
+    return Canvas2D(cx + p.x * FRAC_CANVAS_PHYSICAL, cy - p.y * FRAC_CANVAS_PHYSICAL)
     
 #屏幕接口。
 class Canvas:
@@ -39,7 +46,8 @@ class Canvas:
         return rl.WindowShouldClose()
     def close(self):
         rl.CloseWindow()
-    
+
+
 #raylib实现：add_*只记录绘制命令，draw时统一绘制一帧，clean清空命令。
 class CanvasRaylib(Canvas):
     def __init__(self, width:int, height:int, resizable:bool=True, title:str="foxel", background:Color=Color(0, 0, 0, 255)):

@@ -6,10 +6,12 @@ import (
 	"reflect"
 
 	rl "github.com/gen2brain/raylib-go/raylib"
+
+	"foxel3d/world"
 )
 
 // Raylib 是基于raylib的Canvas实现。
-// 采用保留模式：Add_* 只记录绘制指令，Draw 每帧把记录的指令全部画出来，clean 清空指令。
+// 采用保留模式：Add_* 只记录绘制指令，Draw 每帧把记录的指令全部画出来，Clean 清空指令。
 // 内部状态放在指针里，所以 Raylib 按值传递、链式调用时都共享同一份状态。
 type Raylib struct {
 	s *raylibState
@@ -21,9 +23,9 @@ type raylibState struct {
 	lines3d []raylibLine3D
 	lines2d []raylibLine2D
 
-	// 可比较的image按值缓存贴图，跨clean保留，Close时释放
-	texCache map[image]rl.Texture2D
-	// 不可比较的image没法缓存，生成的贴图在clean时释放
+	// 可比较的image按值缓存贴图，跨Clean保留，Close时释放
+	texCache map[Image]rl.Texture2D
+	// 不可比较的image没法缓存，生成的贴图在Clean时释放
 	texTemp []rl.Texture2D
 }
 
@@ -70,13 +72,13 @@ func (r Raylib) Init(width int, height int) Raylib {
 			Fovy:       45,
 			Projection: rl.CameraPerspective,
 		},
-		texCache: map[image]rl.Texture2D{},
+		texCache: map[Image]rl.Texture2D{},
 	}}
 }
 
 // rot 的长度按弧度解释（pi 即转180度）
 // 图片shader的6张图依次对应 +X, -X, +Y, -Y, +Z, -Z 面
-func (r Raylib) Add_cube(side float64, center Canvas3D, shader Shader, rot Rotation3D) Raylib {
+func (r Raylib) Add_cube(side float64, center Canvas3D, shader Shader, rot world.Rotation3D) Raylib {
 	c := raylibCube{
 		side:       float32(side),
 		center:     toRlVec3(center),
@@ -89,10 +91,10 @@ func (r Raylib) Add_cube(side float64, center Canvas3D, shader Shader, rot Rotat
 	}
 
 	switch c.shaderType {
-	case PureColor:
+	case ShaderTypePureColor:
 		c.color = toRlColor(shader.Shader_pure_color())
-	case Images:
-		imgs := shader.Shader_Images().imgs
+	case ShaderTypeImages:
+		imgs := shader.Shader_Images().Imgs
 		for i, img := range imgs {
 			c.faces[i] = r.s.faceTexture(img)
 		}
@@ -121,7 +123,7 @@ func (r Raylib) Add_line2d(start Canvas2D, end Canvas2D, c Color) Raylib {
 	return r
 }
 
-func (r Raylib) clean() Raylib {
+func (r Raylib) Clean() Raylib {
 	r.s.cubes = r.s.cubes[:0]
 	r.s.lines3d = r.s.lines3d[:0]
 	r.s.lines2d = r.s.lines2d[:0]
@@ -157,13 +159,33 @@ func (r Raylib) Should_close() bool {
 	return rl.WindowShouldClose()
 }
 
+// direction只取方向，长度为0时不改动相机
+// 上方向默认是+Y；视线和Y轴平行（正上/正下看）时改用-Z作为上方向，避免相机退化
+func (r Raylib) Camera3D_loc_and_dir(location Canvas3D, direction Canvas3D) {
+	dir := toRlVec3(direction)
+	if rl.Vector3Length(dir) == 0 {
+		return
+	}
+	dir = rl.Vector3Normalize(dir)
+
+	up := rl.NewVector3(0, 1, 0)
+	if rl.Vector3Length(rl.Vector3CrossProduct(dir, up)) < 1e-6 {
+		up = rl.NewVector3(0, 0, -1)
+	}
+
+	pos := toRlVec3(location)
+	r.s.camera.Position = pos
+	r.s.camera.Target = rl.Vector3Add(pos, dir)
+	r.s.camera.Up = up
+}
+
 func (r Raylib) Get_window_size() (uint64, uint64) {
 	return uint64(rl.GetScreenWidth()), uint64(rl.GetScreenHeight())
 }
 
 // 不在Canvas接口里，用完后调用以释放贴图并关闭窗口
 func (r Raylib) Close() {
-	r.clean()
+	r.Clean()
 	for _, t := range r.s.texCache {
 		rl.UnloadTexture(t)
 	}
@@ -197,9 +219,9 @@ func drawCube(c raylibCube) {
 	}
 
 	switch c.shaderType {
-	case PureColor:
+	case ShaderTypePureColor:
 		rl.DrawCube(rl.NewVector3(0, 0, 0), c.side, c.side, c.side, c.color)
-	case Images:
+	case ShaderTypeImages:
 		rl.Scalef(c.side, c.side, c.side)
 		for i, f := range cubeFaces {
 			// 每个面一张贴图，所以每个面单独一个batch
@@ -220,7 +242,7 @@ func drawCube(c raylibCube) {
 	rl.PopMatrix()
 }
 
-func (s *raylibState) faceTexture(img image) rl.Texture2D {
+func (s *raylibState) faceTexture(img Image) rl.Texture2D {
 	cacheable := img != nil && reflect.ValueOf(img).Comparable()
 	if cacheable {
 		if t, ok := s.texCache[img]; ok {
@@ -237,14 +259,14 @@ func (s *raylibState) faceTexture(img image) rl.Texture2D {
 }
 
 // 在像素中心采样，保证输入严格落在(0,1)内；img为nil时用纯白
-func sampleTexture(img image) rl.Texture2D {
+func sampleTexture(img Image) rl.Texture2D {
 	const n = raylibFaceTexSize
 	data := make([]byte, n*n*4)
 	for y := range n {
 		for x := range n {
 			c := Color{255, 255, 255, 255}
 			if img != nil {
-				c = img.get((float64(x)+0.5)/n, (float64(y)+0.5)/n)
+				c = img.Get((float64(x)+0.5)/n, (float64(y)+0.5)/n)
 			}
 			p := (y*n + x) * 4
 			data[p], data[p+1], data[p+2], data[p+3] = c.R, c.G, c.B, c.A

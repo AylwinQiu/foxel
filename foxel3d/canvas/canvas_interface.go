@@ -72,5 +72,13 @@ type Canvas[Self any] interface {
 	Get_window_size() (uint64, uint64)
 	// 设置3d相机的位置和朝向，direction是看向的方向，向量长度没有意义。只要direction的方向。
 	Camera3D_loc_and_dir(location Canvas3D, direction Canvas3D)
+	// 设置3d相机的横向视角、纵向视角和倾斜角度，都用角度制。
+	// horizontal和vertical是负数时取绝对值。
+	// auto为true时忽略vertical，纵向视角由horizontal按窗口宽高比算出，画面不会被拉伸。
+	// auto为false时横向、纵向视角都固定，和窗口宽高比不一致时画面会被拉伸。
+	// 倾斜是相机顺时针为正，逆时针为负。
+	Camera3D_vis_angle(horizontal float64, vertical float64, tilt float64, auto bool)
+	// 获得视锥体四角射线，返回时左上TL, 右上TR, 左下BL, 右下BR, 射线长度是1.0，方向是从相机往外指。
+	Get_frustum_corner_rays(camera_direction Canvas3D) (Canvas3D, Canvas3D, Canvas3D, Canvas3D)
 	//todo:我们会继续增加新的功能如果需要的话
 }

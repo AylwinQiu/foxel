@@ -4,12 +4,18 @@ var next_id CubeID = CubeID{
 	id: [4]uint64{0, 0, 0, 0},
 }
 
-// Cube里面只储存了cubeID和关于cube位置的信息。
+// Cube里面只储存了cubeID和关于cube位置的信息.
+//
+// Children: 这里是cube的子cube，如果是nil表示没有东西了
+//
+// Rotation: cube的旋转轴，长度是转动弧度，用右手定则
+//
+// Offset: cube的偏移
 type Cube struct {
-	children [8]*Cube
-	rotation [3]float64
-	offset   [3]float64
-	id       CubeID
+	Children [8]*Cube
+	Rotation [3]float64
+	Offset   [3]float64
+	Id       CubeID
 }
 
 type CubeID struct {

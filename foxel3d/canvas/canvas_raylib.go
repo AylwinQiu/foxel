@@ -18,7 +18,13 @@ type Raylib struct {
 }
 
 type raylibState struct {
-	camera  rl.Camera3D
+	camera rl.Camera3D
+	// 纵向、横向视角（角度制，总是正数），fovH为0表示没设置过，此时横向视角按窗口宽高比由纵向视角算出
+	fovV, fovH float64
+	// 为true时忽略fovV，纵向视角按窗口宽高比由横向视角算出
+	fovAuto bool
+	// 倾斜角（角度制），相机顺时针转为正
+	tilt    float64
 	cubes   []raylibCube
 	lines3d []raylibLine3D
 	lines2d []raylibLine2D
@@ -62,6 +68,8 @@ var raylibBackground = rl.RayWhite
 const raylibFaceTexSize = 64
 
 func (r Raylib) Init(width int, height int) Raylib {
+	// 窗口可以拖动修改大小，必须在InitWindow之前设置；3D视角的宽高比raylib每帧按当前窗口大小计算
+	rl.SetConfigFlags(rl.FlagWindowResizable)
 	rl.InitWindow(int32(width), int32(height), "foxel3d")
 	rl.SetTargetFPS(60)
 	return Raylib{s: &raylibState{
@@ -72,6 +80,7 @@ func (r Raylib) Init(width int, height int) Raylib {
 			Fovy:       45,
 			Projection: rl.CameraPerspective,
 		},
+		fovV:     45,
 		texCache: map[Image]rl.Texture2D{},
 	}}
 }
@@ -138,7 +147,10 @@ func (r Raylib) Draw() Raylib {
 	rl.BeginDrawing()
 	rl.ClearBackground(raylibBackground)
 
+	// BeginMode3D只支持一个fovy，这里用自己算的矩阵覆盖它设置的投影和视图矩阵，EndMode3D照常恢复2D的矩阵
 	rl.BeginMode3D(r.s.camera)
+	rl.SetMatrixProjection(r.s.projection())
+	rl.SetMatrixModelview(r.s.view())
 	for _, c := range r.s.cubes {
 		drawCube(c)
 	}
@@ -168,15 +180,114 @@ func (r Raylib) Camera3D_loc_and_dir(location Canvas3D, direction Canvas3D) {
 	}
 	dir = rl.Vector3Normalize(dir)
 
-	up := rl.NewVector3(0, 1, 0)
-	if rl.Vector3Length(rl.Vector3CrossProduct(dir, up)) < 1e-6 {
-		up = rl.NewVector3(0, 0, -1)
-	}
-
 	pos := toRlVec3(location)
 	r.s.camera.Position = pos
 	r.s.camera.Target = rl.Vector3Add(pos, dir)
-	r.s.camera.Up = up
+	r.s.camera.Up = toRlVec3(cameraUp(Canvas3D{X: float64(dir.X), Y: float64(dir.Y), Z: float64(dir.Z)}))
+}
+
+// 相机的上方向，dir必须是单位向量
+func cameraUp(dir Canvas3D) Canvas3D {
+	up := Canvas3D{Y: 1}
+	if vec3Len(vec3Cross(dir, up)) < 1e-6 {
+		up = Canvas3D{Z: -1}
+	}
+	return up
+}
+
+// 视角取绝对值后必须在(0, 180)内（auto时不检查vertical），否则整个调用不生效
+func (r Raylib) Camera3D_vis_angle(horizontal float64, vertical float64, tilt float64, auto bool) {
+	horizontal, vertical = math.Abs(horizontal), math.Abs(vertical)
+	if !validFov(horizontal) || (!auto && !validFov(vertical)) || math.IsNaN(tilt) || math.IsInf(tilt, 0) {
+		return
+	}
+	r.s.fovH = horizontal
+	if !auto {
+		r.s.fovV = vertical
+	}
+	r.s.fovAuto = auto
+	r.s.tilt = tilt
+}
+
+func validFov(deg float64) bool {
+	return deg > 0 && deg < 180
+}
+
+// 和raylib默认的近、远裁剪面一致
+const (
+	raylibNear = 0.05
+	raylibFar  = 4000.0
+)
+
+func (s *raylibState) projection() rl.Matrix {
+	tanH, tanV := s.halfFovTan()
+	right, top := raylibNear*tanH, raylibNear*tanV
+	return rl.MatrixFrustum(float32(-right), float32(right), float32(-top), float32(top), raylibNear, raylibFar)
+}
+
+// 横向、纵向半视角的正切，也就是视线方向距离为1处，画面右边缘和上边缘离中心的距离
+func (s *raylibState) halfFovTan() (tanH, tanV float64) {
+	aspect := 1.0
+	if w, h := rl.GetScreenWidth(), rl.GetScreenHeight(); w > 0 && h > 0 {
+		aspect = float64(w) / float64(h)
+	}
+	switch {
+	case s.fovH == 0:
+		tanV = math.Tan(s.fovV * math.Pi / 360)
+		tanH = tanV * aspect
+	case s.fovAuto:
+		tanH = math.Tan(s.fovH * math.Pi / 360)
+		tanV = tanH / aspect
+	default:
+		tanH = math.Tan(s.fovH * math.Pi / 360)
+		tanV = math.Tan(s.fovV * math.Pi / 360)
+	}
+	return tanH, tanV
+}
+
+// 用当前的视角、倾斜和窗口宽高比，算出相机朝camera_direction看时视锥四条棱的方向
+// 上方向的规则和Camera3D_loc_and_dir一致；camera_direction长度为0时用相机当前的朝向
+func (r Raylib) Get_frustum_corner_rays(camera_direction Canvas3D) (Canvas3D, Canvas3D, Canvas3D, Canvas3D) {
+	f := camera_direction
+	if vec3Len(f) == 0 {
+		d := rl.Vector3Subtract(r.s.camera.Target, r.s.camera.Position)
+		f = Canvas3D{X: float64(d.X), Y: float64(d.Y), Z: float64(d.Z)}
+	}
+	f = vec3Normalize(f)
+	right := vec3Normalize(vec3Cross(f, cameraUp(f)))
+	up := vec3Cross(right, f)
+
+	tanH, tanV := r.s.halfFovTan()
+	sin, cos := math.Sincos(r.s.tilt * math.Pi / 180)
+	// 画面上(x, y)处的射线：view()里画面相对相机转了+tilt，这里转回-tilt得到相机自身坐标系里的方向
+	ray := func(x, y float64) Canvas3D {
+		rx := x*cos + y*sin
+		ry := -x*sin + y*cos
+		d := vec3Add(vec3Add(vec3Scale(right, rx), vec3Scale(up, ry)), f)
+		return vec3Normalize(d)
+	}
+	return ray(-tanH, tanV), ray(tanH, tanV), ray(-tanH, -tanV), ray(tanH, -tanV)
+}
+
+func vec3Add(a, b Canvas3D) Canvas3D { return Canvas3D{X: a.X + b.X, Y: a.Y + b.Y, Z: a.Z + b.Z} }
+
+func vec3Scale(a Canvas3D, k float64) Canvas3D { return Canvas3D{X: a.X * k, Y: a.Y * k, Z: a.Z * k} }
+
+func vec3Cross(a, b Canvas3D) Canvas3D {
+	return Canvas3D{X: a.Y*b.Z - a.Z*b.Y, Y: a.Z*b.X - a.X*b.Z, Z: a.X*b.Y - a.Y*b.X}
+}
+
+func vec3Len(a Canvas3D) float64 { return math.Sqrt(a.X*a.X + a.Y*a.Y + a.Z*a.Z) }
+
+func vec3Normalize(a Canvas3D) Canvas3D { return vec3Scale(a, 1/vec3Len(a)) }
+
+// 相机顺时针转等于画面逆时针转，所以在视图空间里绕+Z（指向屏幕外）转+tilt
+func (s *raylibState) view() rl.Matrix {
+	v := rl.MatrixLookAt(s.camera.Position, s.camera.Target, s.camera.Up)
+	if s.tilt != 0 {
+		v = rl.MatrixMultiply(v, rl.MatrixRotateZ(float32(s.tilt*math.Pi/180)))
+	}
+	return v
 }
 
 func (r Raylib) Get_window_size() (uint64, uint64) {

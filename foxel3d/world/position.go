@@ -57,6 +57,12 @@ type TreePosition struct {
 	}
 }
 
+// 返回offset为0的树坐标，也就是正好落在格子中心，原来的tree不变
+func (tree TreePosition) Without_offset() TreePosition {
+	tree.offset.x, tree.offset.y, tree.offset.z = 0, 0, 0
+	return tree
+}
+
 // 旋转
 // 这个是旋转的轴向，使用右手定则，向量模长代表的是旋转弧度，使用弧度制。
 type Rotation3D struct {

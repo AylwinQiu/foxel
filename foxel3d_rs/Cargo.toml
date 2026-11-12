@@ -1,0 +1,12 @@
+[package]
+name = "foxel3d_rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mlua = { version = "0.12", features = ["lua55", "vendored", "serde"] }
+raylib = "6.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+flate2 = "1"
+png = "0.18"

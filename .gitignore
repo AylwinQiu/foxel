@@ -1,4 +1,4 @@
-/target
+target/
 # pixi environments
 .pixi/*
 !.pixi/config.toml

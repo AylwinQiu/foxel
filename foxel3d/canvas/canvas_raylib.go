@@ -12,7 +12,7 @@ import (
 
 // Raylib 是基于raylib的Canvas实现。
 // 采用保留模式：Add_* 只记录绘制指令，Draw 每帧把记录的指令全部画出来，Clean 清空指令。
-// 内部状态放在指针里，所以 Raylib 按值传递、链式调用时都共享同一份状态。
+// 用法：r := &canvas.Raylib{}; r.Init(800, 450); defer r.Close()
 type Raylib struct {
 	s *raylibState
 }
@@ -28,6 +28,7 @@ type raylibState struct {
 	cubes   []raylibCube
 	lines3d []raylibLine3D
 	lines2d []raylibLine2D
+	texts2d []raylibText2D
 
 	// 可比较的image按值缓存贴图，跨Clean保留，Close时释放
 	texCache map[Image]rl.Texture2D
@@ -42,9 +43,8 @@ type raylibCube struct {
 	axis  rl.Vector3
 	angle float32
 
-	shaderType ShaderType
-	color      rl.Color
-	faces      [6]rl.Texture2D
+	// 依次是 +X(东), -X(西), +Y(上), -Y(下), +Z(南), -Z(北) 面，和cubeFaces一致
+	faces [6]rl.Texture2D
 }
 
 type raylibLine3D struct {
@@ -59,20 +59,32 @@ type raylibLine2D struct {
 	color rl.Color
 }
 
-// 编译期检查 Raylib 实现了 Canvas[Raylib]
-var _ Canvas[Raylib] = Raylib{}
+type raylibText2D struct {
+	text  string
+	pos   rl.Vector2
+	color rl.Color
+}
+
+// 编译期检查 Raylib 实现了 Canvas
+var _ Canvas = (*Raylib)(nil)
 
 var raylibBackground = rl.RayWhite
 
-// 图片shader采样成贴图时每个面的分辨率
+// 不知道大小的Image采样成贴图时每个面的分辨率
 const raylibFaceTexSize = 64
 
-func (r Raylib) Init(width int, height int) Raylib {
+// 知道大小的Image（比如Images{}.Url读的图片）按原大小生成贴图，但边长不超过这个
+const raylibMaxTexSize = 1024
+
+// Add_2d_text的字号（像素）
+const raylibTextSize = 20
+
+func (r *Raylib) Init(width int, height int) {
 	// 窗口可以拖动修改大小，必须在InitWindow之前设置；3D视角的宽高比raylib每帧按当前窗口大小计算
 	rl.SetConfigFlags(rl.FlagWindowResizable)
 	rl.InitWindow(int32(width), int32(height), "foxel3d")
 	rl.SetTargetFPS(60)
-	return Raylib{s: &raylibState{
+	r.s = &raylibState{
 		camera: rl.Camera3D{
 			Position:   rl.NewVector3(10, 10, 10),
 			Target:     rl.NewVector3(0, 0, 0),
@@ -82,16 +94,16 @@ func (r Raylib) Init(width int, height int) Raylib {
 		},
 		fovV:     45,
 		texCache: map[Image]rl.Texture2D{},
-	}}
+	}
 }
 
 // rot 的长度按弧度解释（pi 即转180度）
-// 图片shader的6张图依次对应 +X, -X, +Y, -Y, +Z, -Z 面
-func (r Raylib) Add_cube(side float64, center Canvas3D, shader Shader, rot world.Rotation3D) Raylib {
+// 东西南北：East是+X，West是-X，Up是+Y，Down是-Y，South是+Z，North是-Z；没有设置的面（nil）是白色
+// 每张图从cube外面看是正的，侧面的图片上方朝上，Up面的图片上方朝北，Down面的图片上方朝南
+func (r *Raylib) Add_cube(side float64, center Canvas3D, img Images, rot world.Rotation3D) {
 	c := raylibCube{
-		side:       float32(side),
-		center:     toRlVec3(center),
-		shaderType: shader.Type(),
+		side:   float32(side),
+		center: toRlVec3(center),
 	}
 
 	if l := math.Sqrt(rot.X*rot.X + rot.Y*rot.Y + rot.Z*rot.Z); l > 0 {
@@ -99,51 +111,51 @@ func (r Raylib) Add_cube(side float64, center Canvas3D, shader Shader, rot world
 		c.angle = float32(l * 180 / math.Pi)
 	}
 
-	switch c.shaderType {
-	case ShaderTypePureColor:
-		c.color = toRlColor(shader.Shader_pure_color())
-	case ShaderTypeImages:
-		imgs := shader.Shader_Images().Imgs
-		for i, img := range imgs {
-			c.faces[i] = r.s.faceTexture(img)
-		}
+	for i, face := range [6]Image{img.East, img.West, img.Up, img.Down, img.South, img.North} {
+		c.faces[i] = r.s.faceTexture(face)
 	}
 
 	r.s.cubes = append(r.s.cubes, c)
-	return r
 }
 
-func (r Raylib) Add_line3d(start Canvas3D, end Canvas3D, c Color) Raylib {
+func (r *Raylib) Add_line3d(start Canvas3D, end Canvas3D, c Color) {
 	r.s.lines3d = append(r.s.lines3d, raylibLine3D{
 		start: toRlVec3(start),
 		end:   toRlVec3(end),
 		color: toRlColor(c),
 	})
-	return r
+}
+
+// pos是文字左上角，单位是屏幕像素，左上角为原点；字号固定raylibTextSize，可以用\n换行
+func (r *Raylib) Add_2d_text(text string, pos Canvas2D, color Color) {
+	r.s.texts2d = append(r.s.texts2d, raylibText2D{
+		text:  text,
+		pos:   rl.NewVector2(float32(pos.X), float32(pos.Y)),
+		color: toRlColor(color),
+	})
 }
 
 // 坐标单位是屏幕像素，左上角为原点
-func (r Raylib) Add_line2d(start Canvas2D, end Canvas2D, c Color) Raylib {
+func (r *Raylib) Add_2d_line(start Canvas2D, end Canvas2D, color Color) {
 	r.s.lines2d = append(r.s.lines2d, raylibLine2D{
 		start: rl.NewVector2(float32(start.X), float32(start.Y)),
 		end:   rl.NewVector2(float32(end.X), float32(end.Y)),
-		color: toRlColor(c),
+		color: toRlColor(color),
 	})
-	return r
 }
 
-func (r Raylib) Clean() Raylib {
+func (r *Raylib) Clean() {
 	r.s.cubes = r.s.cubes[:0]
 	r.s.lines3d = r.s.lines3d[:0]
 	r.s.lines2d = r.s.lines2d[:0]
+	r.s.texts2d = r.s.texts2d[:0]
 	for _, t := range r.s.texTemp {
 		rl.UnloadTexture(t)
 	}
 	r.s.texTemp = r.s.texTemp[:0]
-	return r
 }
 
-func (r Raylib) Draw() Raylib {
+func (r *Raylib) Draw() {
 	rl.BeginDrawing()
 	rl.ClearBackground(raylibBackground)
 
@@ -162,18 +174,21 @@ func (r Raylib) Draw() Raylib {
 	for _, l := range r.s.lines2d {
 		rl.DrawLineV(l.start, l.end, l.color)
 	}
+	// 文字最后画，盖在线条上面
+	for _, t := range r.s.texts2d {
+		rl.DrawTextEx(rl.GetFontDefault(), t.text, t.pos, raylibTextSize, raylibTextSize/10, t.color)
+	}
 
 	rl.EndDrawing()
-	return r
 }
 
-func (r Raylib) Should_close() bool {
+func (r *Raylib) Should_close() bool {
 	return rl.WindowShouldClose()
 }
 
 // direction只取方向，长度为0时不改动相机
 // 上方向默认是+Y；视线和Y轴平行（正上/正下看）时改用-Z作为上方向，避免相机退化
-func (r Raylib) Camera3D_loc_and_dir(location Canvas3D, direction Canvas3D) {
+func (r *Raylib) Camera3D_loc_and_dir(location Canvas3D, direction Canvas3D) {
 	dir := toRlVec3(direction)
 	if rl.Vector3Length(dir) == 0 {
 		return
@@ -196,7 +211,7 @@ func cameraUp(dir Canvas3D) Canvas3D {
 }
 
 // 视角取绝对值后必须在(0, 180)内（auto时不检查vertical），否则整个调用不生效
-func (r Raylib) Camera3D_vis_angle(horizontal float64, vertical float64, tilt float64, auto bool) {
+func (r *Raylib) Camera3D_vis_angle(horizontal float64, vertical float64, tilt float64, auto bool) {
 	horizontal, vertical = math.Abs(horizontal), math.Abs(vertical)
 	if !validFov(horizontal) || (!auto && !validFov(vertical)) || math.IsNaN(tilt) || math.IsInf(tilt, 0) {
 		return
@@ -247,7 +262,7 @@ func (s *raylibState) halfFovTan() (tanH, tanV float64) {
 
 // 用当前的视角、倾斜和窗口宽高比，算出相机朝camera_direction看时视锥四条棱的方向
 // 上方向的规则和Camera3D_loc_and_dir一致；camera_direction长度为0时用相机当前的朝向
-func (r Raylib) Get_frustum_corner_rays(camera_direction Canvas3D) (Canvas3D, Canvas3D, Canvas3D, Canvas3D) {
+func (r *Raylib) Get_frustum_corner_rays(camera_direction Canvas3D) (Canvas3D, Canvas3D, Canvas3D, Canvas3D) {
 	f := camera_direction
 	if vec3Len(f) == 0 {
 		d := rl.Vector3Subtract(r.s.camera.Target, r.s.camera.Position)
@@ -290,12 +305,12 @@ func (s *raylibState) view() rl.Matrix {
 	return v
 }
 
-func (r Raylib) Get_window_size() (uint64, uint64) {
+func (r *Raylib) Get_window_size() (uint64, uint64) {
 	return uint64(rl.GetScreenWidth()), uint64(rl.GetScreenHeight())
 }
 
 // 不在Canvas接口里，用完后调用以释放贴图并关闭窗口
-func (r Raylib) Close() {
+func (r *Raylib) Close() {
 	r.Clean()
 	for _, t := range r.s.texCache {
 		rl.UnloadTexture(t)
@@ -329,26 +344,21 @@ func drawCube(c raylibCube) {
 		rl.Rotatef(c.angle, c.axis.X, c.axis.Y, c.axis.Z)
 	}
 
-	switch c.shaderType {
-	case ShaderTypePureColor:
-		rl.DrawCube(rl.NewVector3(0, 0, 0), c.side, c.side, c.side, c.color)
-	case ShaderTypeImages:
-		rl.Scalef(c.side, c.side, c.side)
-		for i, f := range cubeFaces {
-			// 每个面一张贴图，所以每个面单独一个batch
-			rl.SetTexture(c.faces[i].ID)
-			rl.Begin(rl.Quads)
-			rl.Color4ub(255, 255, 255, 255)
-			rl.Normal3f(f.normal.X, f.normal.Y, f.normal.Z)
-			// raylib的Quads是逆时针为正面，corners按顺时针排列，这里倒序提交
-			for k := 3; k >= 0; k-- {
-				rl.TexCoord2f(faceUV[k][0], faceUV[k][1])
-				rl.Vertex3f(f.corners[k].X, f.corners[k].Y, f.corners[k].Z)
-			}
-			rl.End()
+	rl.Scalef(c.side, c.side, c.side)
+	for i, f := range cubeFaces {
+		// 每个面一张贴图，所以每个面单独一个batch
+		rl.SetTexture(c.faces[i].ID)
+		rl.Begin(rl.Quads)
+		rl.Color4ub(255, 255, 255, 255)
+		rl.Normal3f(f.normal.X, f.normal.Y, f.normal.Z)
+		// raylib的Quads是逆时针为正面，corners按顺时针排列，这里倒序提交
+		for k := 3; k >= 0; k-- {
+			rl.TexCoord2f(faceUV[k][0], faceUV[k][1])
+			rl.Vertex3f(f.corners[k].X, f.corners[k].Y, f.corners[k].Z)
 		}
-		rl.SetTexture(0)
+		rl.End()
 	}
+	rl.SetTexture(0)
 
 	rl.PopMatrix()
 }
@@ -370,20 +380,28 @@ func (s *raylibState) faceTexture(img Image) rl.Texture2D {
 }
 
 // 在像素中心采样，保证输入严格落在(0,1)内；img为nil时用纯白
+// 有size()的Image按原大小采样（边长不超过raylibMaxTexSize），其他的采样成raylibFaceTexSize见方
 func sampleTexture(img Image) rl.Texture2D {
-	const n = raylibFaceTexSize
-	data := make([]byte, n*n*4)
-	for y := range n {
-		for x := range n {
+	w, h := raylibFaceTexSize, raylibFaceTexSize
+	if s, ok := img.(interface{ size() (int, int) }); ok {
+		w, h = s.size()
+		w, h = min(max(w, 1), raylibMaxTexSize), min(max(h, 1), raylibMaxTexSize)
+	}
+	data := make([]byte, w*h*4)
+	for y := range h {
+		for x := range w {
 			c := Color{255, 255, 255, 255}
 			if img != nil {
-				c = img.Get((float64(x)+0.5)/n, (float64(y)+0.5)/n)
+				c = img.Get_pixel((float64(x)+0.5)/float64(w), (float64(y)+0.5)/float64(h))
 			}
-			p := (y*n + x) * 4
+			p := (y*w + x) * 4
 			data[p], data[p+1], data[p+2], data[p+3] = c.R, c.G, c.B, c.A
 		}
 	}
-	return rl.LoadTextureFromImage(rl.NewImage(data, n, n, 1, rl.UncompressedR8g8b8a8))
+	t := rl.LoadTextureFromImage(rl.NewImage(data, int32(w), int32(h), 1, rl.UncompressedR8g8b8a8))
+	// 不插值，像素风的小图片放大后不会糊
+	rl.SetTextureFilter(t, rl.FilterPoint)
+	return t
 }
 
 func toRlVec3(v Canvas3D) rl.Vector3 {

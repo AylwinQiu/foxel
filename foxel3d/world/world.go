@@ -34,7 +34,24 @@ type WorldInterface[Self any] interface {
 	Get_cube_phy_pos_by_id(id CubeID) (PhysicalPosition3D, error)
 	//通过id获得cube的rotation，需要叠加所有的父cube的rotation来计算，没有这个id返回ErrCubeNotFound
 	Get_cube_rotation_by_id(id CubeID) (Rotation3D, error)
+	//通过id获得cube的边长，没有这个id返回ErrCubeNotFound
+	Get_cube_side_by_id(id CubeID) (float64, error)
+	//从根往下遍历，收集每个cube在世界里的信息。enter返回false时这个cube和它的整棵子树都跳过（用来做视锥剔除等）
+	Collect(enter func(CubeInfo) bool) []CubeInfo
 	// TODO:我们准备添加一些和canvas交互的
+}
+
+// cube在世界里的信息，已经叠加了所有父cube的offset和rotation
+type CubeInfo struct {
+	Id       CubeID
+	Center   PhysicalPosition3D
+	Rotation Rotation3D
+	// 边长
+	Side float64
+	// 没有子cube
+	Is_leaf bool
+	// 根cube
+	Is_root bool
 }
 
 // 实现世界
@@ -211,6 +228,15 @@ func (world *World) Get_cube_rotation_by_id(id CubeID) (Rotation3D, error) {
 	return rot.toRotation(), nil
 }
 
+// 根的边长是2^IDENTITY_DEPTH，每往下一层减半
+func (world *World) Get_cube_side_by_id(id CubeID) (float64, error) {
+	_, octants, ok := world.findPath(id)
+	if !ok {
+		return 0, ErrCubeNotFound
+	}
+	return math.Ldexp(1, IDENTITY_DEPTH-len(octants)), nil
+}
+
 // 深度优先找id，返回从根到这个cube的所有cube（含根和它自己）以及每一步走的卦限
 func (world *World) findPath(id CubeID) (path []*Cube, octants []int8, ok bool) {
 	var walk func(c *Cube) bool
@@ -234,4 +260,48 @@ func (world *World) findPath(id CubeID) (path []*Cube, octants []int8, ok bool) 
 	}
 	ok = walk(&world.tree)
 	return path, octants, ok
+}
+
+// 和Get_cube_phy_pos_by_id一样逐层叠加，只是一次遍历算出所有cube，复杂度O(访问到的cube数)
+func (world *World) Collect(enter func(CubeInfo) bool) []CubeInfo {
+	var out []CubeInfo
+	var walk func(c *Cube, center [3]float64, parentRot quat, side float64, isRoot bool)
+	walk = func(c *Cube, center [3]float64, parentRot quat, side float64, isRoot bool) {
+		rot := parentRot.mul(quatFromRotation(c.Rotation))
+		info := CubeInfo{
+			Id:       c.Id,
+			Center:   PhysicalPosition3D{X: center[0], Y: center[1], Z: center[2]},
+			Rotation: rot.toRotation(),
+			Side:     side,
+			Is_leaf:  true,
+			Is_root:  isRoot,
+		}
+		for _, child := range c.Children {
+			if child != nil {
+				info.Is_leaf = false
+				break
+			}
+		}
+		if !enter(info) {
+			return
+		}
+		out = append(out, info)
+		half := side / 2
+		for o, child := range c.Children {
+			if child == nil {
+				continue
+			}
+			local := [3]float64{
+				octantSign(int8(o)&1)*half/2 + child.Offset[0]*half,
+				octantSign(int8(o)&2)*half/2 + child.Offset[1]*half,
+				octantSign(int8(o)&4)*half/2 + child.Offset[2]*half,
+			}
+			d := rot.rotate(local)
+			walk(child, [3]float64{center[0] + d[0], center[1] + d[1], center[2] + d[2]}, rot, half, false)
+		}
+	}
+	side := math.Ldexp(1, IDENTITY_DEPTH)
+	root := &world.tree
+	walk(root, [3]float64{root.Offset[0] * side, root.Offset[1] * side, root.Offset[2] * side}, quatIdentity, side, true)
+	return out
 }

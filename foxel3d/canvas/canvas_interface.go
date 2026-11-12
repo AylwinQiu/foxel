@@ -15,36 +15,6 @@ type Canvas2D struct {
 	Y float64
 }
 
-// 方块贴图的样式
-type ShaderType uint8
-
-// 定义了不同种类的方块贴图
-const (
-	ShaderTypePureColor ShaderType = iota
-	ShaderTypeImages
-	//todo：可能未来会有更多shader种类加入
-)
-
-// 定义了图片读取接口
-type Image interface {
-	//输入width和height的相对分数，输出图片的颜色在这里的。两个输入都在（0，1）之间
-	Get(float64, float64) Color
-}
-type Images struct {
-	//六个面的填充图片在这里
-	Imgs [6]Image
-}
-
-type Shader interface {
-	//Shader的填充类型。纯色，图片
-	Type() ShaderType
-	//该cube全部用纯色填充
-	Shader_pure_color() Color
-	//该cube用6张图片填充
-	Shader_Images() Images
-	//todo:可能未来会有更多类型的shader加入
-}
-
 type Color struct {
 	R uint8
 	G uint8
@@ -52,20 +22,50 @@ type Color struct {
 	A uint8
 }
 
+type Image interface {
+	//获得图片相对位置的颜色，
+	//@ensure 0.0<=x_frac<=1.0 && 0.0<=y_frac<=1.0
+	Get_pixel(x_frac float64, y_frac float64) Color
+}
+
+type Images struct {
+	Up    Image
+	Down  Image
+	North Image
+	South Image
+	West  Image
+	East  Image
+}
+
+// 可以从网络上通过url或者本地路径来读取资源,读取一张图片并且粘贴到6个面上。
+// http(s)开头的从网络下载，其他的当作本地路径，支持png、jpeg、gif。用法：canvas.Images{}.Url("assets/a.png")
+// 同一个url只读取一次。读取失败时6个面都是品红色，并在stderr打印原因。
+func (images Images) Url(url string) Images {
+	return images.All(loadPicture(url))
+}
+
+// 6个面都用img
+func (images Images) All(img Image) Images {
+	return Images{Up: img, Down: img, North: img, South: img, West: img, East: img}
+}
+
+// 6个面都是纯色c
+func (images Images) Color(c Color) Images {
+	return images.All(SolidColor(c))
+}
+
 // 一个新的窗口需要符合这个接口。
-type Canvas[Self any] interface {
+type Canvas interface {
 	// 创建一个新的窗口。
-	Init(width int, height int) Self
+	Init(width int, height int)
 	// 添加一个cube绘制
-	Add_cube(side float64, center Canvas3D, shader Shader, rot world.Rotation3D) Self
+	Add_cube(side float64, center Canvas3D, img Images, rot world.Rotation3D)
 	// 添加一个线的绘制
-	Add_line3d(start Canvas3D, end Canvas3D, c Color) Self
-	// 添加一个2d线条在屏幕上
-	Add_line2d(start Canvas2D, end Canvas2D, c Color) Self
+	Add_line3d(start Canvas3D, end Canvas3D, c Color)
 	//清除所有
-	Clean() Self
+	Clean()
 	// 绘制一帧
-	Draw() Self
+	Draw()
 	// 屏幕是否需要关闭
 	Should_close() bool
 	// 获得窗口大小
@@ -81,4 +81,15 @@ type Canvas[Self any] interface {
 	// 获得视锥体四角射线，返回时左上TL, 右上TR, 左下BL, 右下BR, 射线长度是1.0，方向是从相机往外指。
 	Get_frustum_corner_rays(camera_direction Canvas3D) (Canvas3D, Canvas3D, Canvas3D, Canvas3D)
 	//todo:我们会继续增加新的功能如果需要的话
+	//
+	//接下来是一些2d接口，因为游戏可能需要绘制一些2d信息，包括文字deng
+	//
+	//添加文字在特定位置。
+	Add_2d_text(text string, pos Canvas2D, color Color)
+	//添加2d线条
+	Add_2d_line(start Canvas2D, end Canvas2D, color Color)
+
+	//控制反馈
+	//获得当前帧按下的键有什么。
+	Get_keys()
 }

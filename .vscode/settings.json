@@ -1,4 +1,19 @@
 {
     "python-envs.defaultEnvManager": "renan-r-santos.pixi-code:pixi",
-    "python-envs.defaultPackageManager": "renan-r-santos.pixi-code:pixi"
+    "python-envs.defaultPackageManager": "renan-r-santos.pixi-code:pixi",
+
+    // Luau：.luau文件交给luau-lsp，不让Lua扩展（sumneko.lua、luahelper）去分析
+    "files.associations": {
+        "*.luau": "luau"
+    },
+    // 新类型求解器：支持type function等新特性，旧求解器会报"This syntax is not supported"
+    "luau-lsp.fflags.enableNewSolver": true,
+    // 不是Roblox项目，不加载Roblox的全局类型（game、workspace、Instance等）
+    "luau-lsp.platform.type": "standard",
+    "luau-lsp.sourcemap.enabled": false,
+
+    // rust-analyzer默认只认根目录的Cargo.toml，engine是单独的项目，要告诉它
+    "rust-analyzer.linkedProjects": [
+        "foxel3d_luau/engine/Cargo.toml"
+    ]
 }
